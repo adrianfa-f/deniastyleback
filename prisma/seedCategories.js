@@ -2,6 +2,11 @@ const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
 
+const adminData = {
+  email: "superadmin@gmail.com",
+  password: "$2b$10$DwWKCHg1wxzx2mUX8KYsG.cF1JswsHS62Ul2VTOZgXeMcRFAedITq", // admin123
+};
+
 const categoriesData = [
   // Vestidos
   {
@@ -319,9 +324,18 @@ const categoriesData = [
   },
 ];
 
+async function seedAdmin() {
+  await prisma.admin.upsert({
+    where: { email: adminData.email },
+    update: {},
+    create: adminData,
+  });
+  console.log("Admin creado/actualizado");
+}
+
 async function seedCategories() {
-  // Primero creamos las categorías principales (sin parent)
   const categoriesMap = new Map();
+  // Categorías principales
   for (const cat of categoriesData) {
     if (!cat.parentName) {
       const created = await prisma.category.upsert({
@@ -336,7 +350,7 @@ async function seedCategories() {
       categoriesMap.set(cat.name, created.id);
     }
   }
-  // Luego las subcategorías
+  // Subcategorías
   for (const cat of categoriesData) {
     if (cat.parentName) {
       const parentId = categoriesMap.get(cat.parentName);
@@ -357,4 +371,17 @@ async function seedCategories() {
   console.log("Categorías sembradas");
 }
 
-seedCategories();
+async function main() {
+  await seedAdmin();
+  await seedCategories();
+  console.log("Seeding completado");
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
