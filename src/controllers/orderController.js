@@ -66,7 +66,15 @@ const createOrder = async (req, res) => {
 const getOrders = async (req, res) => {
   try {
     const orders = await prisma.order.findMany({
-      include: { items: { include: { product: true } } },
+      include: {
+        items: {
+          include: {
+            product: {
+              include: { category: true }, // include category
+            },
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
     });
     res.json(orders);
@@ -182,6 +190,62 @@ const updateOrderStatus = async (req, res) => {
   }
 };
 
+const updateOrder = async (req, res) => {
+  const { id } = req.params;
+  const { customerName, customerEmail, customerPhone, customerAddress, items } =
+    req.body;
+  try {
+    const existingOrder = await prisma.order.findUnique({
+      where: { id: parseInt(id) },
+      include: { items: true },
+    });
+    if (!existingOrder)
+      return res.status(404).json({ error: "Pedido no encontrado" });
+    if (existingOrder.status === "Entregado") {
+      return res
+        .status(400)
+        .json({ error: "No se puede modificar un pedido entregado" });
+    }
+    if (existingOrder.status !== "Pendiente") {
+      return res
+        .status(400)
+        .json({ error: "Solo se pueden editar pedidos pendientes" });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: parseInt(id) },
+        data: { customerName, customerEmail, customerPhone, customerAddress },
+      });
+      await tx.orderItem.deleteMany({ where: { orderId: parseInt(id) } });
+      let total = 0;
+      for (const item of items) {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+        });
+        if (!product)
+          throw new Error(`Producto ${item.productId} no encontrado`);
+        total += product.price * item.quantity;
+        await tx.orderItem.create({
+          data: {
+            orderId: parseInt(id),
+            productId: item.productId,
+            quantity: item.quantity,
+            price: product.price,
+          },
+        });
+      }
+      await tx.order.update({ where: { id: parseInt(id) }, data: { total } });
+    });
+    res.json({ message: "Pedido actualizado" });
+  } catch (error) {
+    console.error(error);
+    res
+      .status(500)
+      .json({ error: error.message || "Error al actualizar pedido" });
+  }
+};
+
 // Eliminar un pedido (admin) – opcional, con manejo de stock si estaba confirmado
 const deleteOrder = async (req, res) => {
   const { id } = req.params;
@@ -222,4 +286,5 @@ module.exports = {
   getOrderById,
   updateOrderStatus,
   deleteOrder,
+  updateOrder,
 };
