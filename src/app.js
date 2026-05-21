@@ -66,4 +66,8 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
+app.get("/api/health", (req, res) => {
+  res.json({ status: "OK", message: "Servidor funcionando correctamente" });
+});
+
 module.exports = app;
