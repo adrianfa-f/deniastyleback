@@ -1,8 +1,8 @@
-// src/controllers/orderController.js
 const { PrismaClient } = require("@prisma/client");
+
 const prisma = new PrismaClient();
 
-// Crear un pedido (sin descuento de stock)
+// Crear un pedido (público, sin descuento de stock)
 const createOrder = async (req, res) => {
   const { customerName, customerEmail, customerPhone, customerAddress, items } =
     req.body;
@@ -12,7 +12,6 @@ const createOrder = async (req, res) => {
   }
 
   try {
-    // Verificar productos, stock y calcular total
     let total = 0;
     const orderItemsData = [];
 
@@ -25,7 +24,6 @@ const createOrder = async (req, res) => {
           .status(404)
           .json({ error: `Producto con ID ${item.productId} no encontrado` });
       }
-      // Verificar stock suficiente
       if (product.stock < item.quantity) {
         return res.status(400).json({
           error: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}, solicitado: ${item.quantity}`,
@@ -39,7 +37,6 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Crear el pedido en estado Pendiente
     const order = await prisma.order.create({
       data: {
         customerName,
@@ -48,9 +45,7 @@ const createOrder = async (req, res) => {
         customerAddress,
         total,
         status: "Pendiente",
-        items: {
-          create: orderItemsData,
-        },
+        items: { create: orderItemsData },
       },
       include: { items: true },
     });
@@ -62,17 +57,13 @@ const createOrder = async (req, res) => {
   }
 };
 
-// Obtener todos los pedidos (solo admin)
+// Obtener todos los pedidos (admin)
 const getOrders = async (req, res) => {
   try {
     const orders = await prisma.order.findMany({
       include: {
         items: {
-          include: {
-            product: {
-              include: { category: true }, // include category
-            },
-          },
+          include: { product: { include: { category: true } } },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -84,7 +75,7 @@ const getOrders = async (req, res) => {
   }
 };
 
-// Obtener un pedido por ID (admin)
+// Obtener pedido por ID (admin)
 const getOrderById = async (req, res) => {
   const { id } = req.params;
   try {
@@ -92,9 +83,7 @@ const getOrderById = async (req, res) => {
       where: { id: parseInt(id) },
       include: { items: { include: { product: true } } },
     });
-    if (!order) {
-      return res.status(404).json({ error: "Pedido no encontrado" });
-    }
+    if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
     res.json(order);
   } catch (error) {
     console.error(error);
@@ -102,7 +91,7 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// Actualizar estado del pedido (admin)
+// Actualizar estado del pedido (admin) – sin FIFO, stock simple
 const updateOrderStatus = async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
@@ -123,28 +112,20 @@ const updateOrderStatus = async (req, res) => {
       where: { id: parseInt(id) },
       include: { items: true },
     });
-    if (!order) {
-      return res.status(404).json({ error: "Pedido no encontrado" });
-    }
+    if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
 
-    // Lógica de transacción para cambios de estado que afectan stock
+    // Confirmar pedido: descontar stock
     if (status === "Confirmado" && order.status !== "Confirmado") {
-      // Confirmar: descontar stock (solo si no estaba confirmado antes)
-      // Verificar que haya suficiente stock para cada producto
-      for (const item of order.items) {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
-        });
-        if (!product || product.stock < item.quantity) {
-          return res.status(400).json({
-            error: `Stock insuficiente para ${product?.name || "producto"}. Disponible: ${product?.stock || 0}`,
-          });
-        }
-      }
-
-      // Realizar transacción: descontar stock y actualizar estado
       await prisma.$transaction(async (tx) => {
         for (const item of order.items) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+          });
+          if (!product || product.stock < item.quantity) {
+            throw new Error(
+              `Stock insuficiente para producto ID ${item.productId}`,
+            );
+          }
           await tx.product.update({
             where: { id: item.productId },
             data: { stock: { decrement: item.quantity } },
@@ -155,8 +136,9 @@ const updateOrderStatus = async (req, res) => {
           data: { status },
         });
       });
-    } else if (status === "Cancelado" && order.status === "Confirmado") {
-      // Cancelar un pedido confirmado: restituir stock
+    }
+    // Cancelar pedido confirmado: restituir stock
+    else if (status === "Cancelado" && order.status === "Confirmado") {
       await prisma.$transaction(async (tx) => {
         for (const item of order.items) {
           await tx.product.update({
@@ -169,16 +151,15 @@ const updateOrderStatus = async (req, res) => {
           data: { status },
         });
       });
-    } else {
-      // Otros cambios de estado (Pendiente->Enviado, etc.) no afectan stock
-      const updatedOrder = await prisma.order.update({
+    }
+    // Otros cambios de estado (Pendiente->Enviado, etc.) no afectan inventario
+    else {
+      await prisma.order.update({
         where: { id: parseInt(id) },
         data: { status },
       });
-      return res.json(updatedOrder);
     }
 
-    // Devolver el pedido actualizado
     const updatedOrder = await prisma.order.findUnique({
       where: { id: parseInt(id) },
       include: { items: { include: { product: true } } },
@@ -186,10 +167,13 @@ const updateOrderStatus = async (req, res) => {
     res.json(updatedOrder);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Error al actualizar el estado del pedido" });
+    res
+      .status(500)
+      .json({ error: error.message || "Error al actualizar estado" });
   }
 };
 
+// Editar pedido completo (solo Pendiente)
 const updateOrder = async (req, res) => {
   const { id } = req.params;
   const { customerName, customerEmail, customerPhone, customerAddress, items } =
@@ -201,18 +185,13 @@ const updateOrder = async (req, res) => {
     });
     if (!existingOrder)
       return res.status(404).json({ error: "Pedido no encontrado" });
-    if (existingOrder.status === "Entregado") {
-      return res
-        .status(400)
-        .json({ error: "No se puede modificar un pedido entregado" });
-    }
     if (existingOrder.status !== "Pendiente") {
       return res
         .status(400)
         .json({ error: "Solo se pueden editar pedidos pendientes" });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       await tx.order.update({
         where: { id: parseInt(id) },
         data: { customerName, customerEmail, customerPhone, customerAddress },
@@ -225,6 +204,9 @@ const updateOrder = async (req, res) => {
         });
         if (!product)
           throw new Error(`Producto ${item.productId} no encontrado`);
+        if (product.stock < item.quantity) {
+          throw new Error(`Stock insuficiente para ${product.name}`);
+        }
         total += product.price * item.quantity;
         await tx.orderItem.create({
           data: {
@@ -237,7 +219,7 @@ const updateOrder = async (req, res) => {
       }
       await tx.order.update({ where: { id: parseInt(id) }, data: { total } });
     });
-    res.json({ message: "Pedido actualizado" });
+    res.json({ message: "Pedido actualizado correctamente" });
   } catch (error) {
     console.error(error);
     res
@@ -246,7 +228,7 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// Eliminar un pedido (admin) – opcional, con manejo de stock si estaba confirmado
+// Eliminar pedido (admin)
 const deleteOrder = async (req, res) => {
   const { id } = req.params;
   try {
@@ -254,12 +236,10 @@ const deleteOrder = async (req, res) => {
       where: { id: parseInt(id) },
       include: { items: true },
     });
-    if (!order) {
-      return res.status(404).json({ error: "Pedido no encontrado" });
-    }
+    if (!order) return res.status(404).json({ error: "Pedido no encontrado" });
 
     if (order.status === "Confirmado") {
-      // Si estaba confirmado, debemos restituir stock antes de borrar
+      // Restituir stock antes de eliminar
       await prisma.$transaction(async (tx) => {
         for (const item of order.items) {
           await tx.product.update({
@@ -272,11 +252,10 @@ const deleteOrder = async (req, res) => {
     } else {
       await prisma.order.delete({ where: { id: parseInt(id) } });
     }
-
     res.json({ message: "Pedido eliminado correctamente" });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Error al eliminar el pedido" });
+    res.status(500).json({ error: "Error al eliminar pedido" });
   }
 };
 
@@ -285,6 +264,6 @@ module.exports = {
   getOrders,
   getOrderById,
   updateOrderStatus,
-  deleteOrder,
   updateOrder,
+  deleteOrder,
 };

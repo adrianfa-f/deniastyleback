@@ -1,4 +1,3 @@
-// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,7 +10,7 @@ datasource db {
 model Admin {
   id        Int      @id @default(autoincrement())
   email     String   @unique
-  password  String   // hasheado con bcrypt
+  password  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -29,20 +28,47 @@ model Category {
   updatedAt   DateTime   @updatedAt
 }
 
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  contact   String?   // nombre de contacto
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  stockEntries StockEntry[]
+}
+
+model StockEntry {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  supplierId  Int
+  quantity    Int      // cantidad disponible actual (para FIFO)
+  initialQty  Int      // cantidad original recibida (para referencia)
+  costPerUnit Float    // precio de adquisición unitario
+  receivedAt  DateTime @default(now())
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier    Supplier @relation(fields: [supplierId], references: [id])
+
+  @@index([productId, receivedAt]) // para FIFO (ordenar por fecha)
+}
+
 model Product {
   id          Int      @id @default(autoincrement())
   name        String
   slug        String   @unique
   description String?
-  price       Float
-  stock       Int      @default(0)
-  categoryId  Int      // Relación con Category
+  price       Float    // precio de venta
+  stock       Int      @default(0) // stock total (suma de StockEntry.quantity)
+  categoryId  Int
   category    Category @relation(fields: [categoryId], references: [id])
-  images      Json     // array de strings
-  attributes  Json     // array de objetos con nombre y valor
+  images      Json     // array de strings (URLs de Cloudinary)
+  attributes  Json     // array de objetos
   destacado   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  stockEntries StockEntry[]
   orders      OrderItem[]
 }
 
@@ -63,7 +89,9 @@ model OrderItem {
   orderId   Int
   productId Int
   quantity  Int
-  price     Float   // precio en el momento de la compra (congelado)
+  price     Float   // precio de venta en el momento (congelado)
+  cost      Float?  // costo de adquisición real calculado al confirmar (FIFO)
+  layersConsumed Json? // guarda array de { stockEntryId, quantity } usado para poder revertir cancelación
   order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product   Product @relation(fields: [productId], references: [id])
 }

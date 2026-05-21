@@ -1,31 +1,22 @@
-// src/controllers/productController.js
 const { PrismaClient } = require("@prisma/client");
+const { deleteImagesFromUrls } = require("../services/cloudinaryCleanup");
+
 const prisma = new PrismaClient();
 
-// Obtener todos los productos (público) con filtros opcionales
+// Obtener todos los productos (público) con filtros
 const getProducts = async (req, res) => {
   try {
     const { categoryId, search, minPrice, maxPrice } = req.query;
-
     const where = {};
-
-    if (categoryId) {
-      where.categoryId = parseInt(categoryId);
-    }
-
+    if (categoryId) where.categoryId = parseInt(categoryId);
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },
         { description: { contains: search, mode: "insensitive" } },
       ];
     }
-
-    if (minPrice !== undefined) {
-      where.price = { gte: parseFloat(minPrice) };
-    }
-    if (maxPrice !== undefined) {
-      where.price = { ...where.price, lte: parseFloat(maxPrice) };
-    }
+    if (minPrice) where.price = { gte: parseFloat(minPrice) };
+    if (maxPrice) where.price = { ...where.price, lte: parseFloat(maxPrice) };
 
     const products = await prisma.product.findMany({ where });
     res.json(products);
@@ -35,24 +26,23 @@ const getProducts = async (req, res) => {
   }
 };
 
-// Obtener un producto por ID (público)
+// Obtener producto por ID (público)
 const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
     const product = await prisma.product.findUnique({
       where: { id: parseInt(id) },
     });
-    if (!product) {
+    if (!product)
       return res.status(404).json({ error: "Producto no encontrado" });
-    }
     res.json(product);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Error al obtener el producto" });
+    res.status(500).json({ error: "Error al obtener producto" });
   }
 };
 
-// Crear producto (requiere token)
+// Crear producto (admin)
 const createProduct = async (req, res) => {
   try {
     const {
@@ -66,7 +56,6 @@ const createProduct = async (req, res) => {
       attributes,
       destacado,
     } = req.body;
-
     const product = await prisma.product.create({
       data: {
         name,
@@ -83,59 +72,76 @@ const createProduct = async (req, res) => {
     res.status(201).json(product);
   } catch (error) {
     console.error(error);
-    if (error.code === "P2002") {
-      return res
-        .status(400)
-        .json({ error: "Ya existe un producto con ese slug" });
-    }
+    if (error.code === "P2002")
+      return res.status(400).json({ error: "Slug ya existe" });
     res.status(500).json({ error: "Error al crear producto" });
   }
 };
 
-// Actualizar producto (requiere token)
+// Actualizar producto (admin) – con eliminación de imágenes viejas
 const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
 
-    // Evitar que se modifique el ID
-    delete data.id;
+    const oldProduct = await prisma.product.findUnique({
+      where: { id: parseInt(id) },
+    });
+    if (!oldProduct)
+      return res.status(404).json({ error: "Producto no encontrado" });
 
-    // Convertir campos a tipos correctos si están presentes
+    // Limpiar imágenes que ya no se usan
+    if (data.images && Array.isArray(data.images)) {
+      const oldImages = oldProduct.images || [];
+      const imagesToDelete = oldImages.filter(
+        (img) => !data.images.includes(img),
+      );
+      if (imagesToDelete.length) {
+        await deleteImagesFromUrls(imagesToDelete);
+      }
+    }
+
+    // Convertir tipos
     if (data.price) data.price = parseFloat(data.price);
     if (data.stock) data.stock = parseInt(data.stock);
     if (data.categoryId) data.categoryId = parseInt(data.categoryId);
+    delete data.id; // evitar modificar ID
 
-    const product = await prisma.product.update({
+    const updated = await prisma.product.update({
       where: { id: parseInt(id) },
       data,
     });
-    res.json(product);
+    res.json(updated);
   } catch (error) {
     console.error(error);
-    if (error.code === "P2025") {
+    if (error.code === "P2025")
       return res.status(404).json({ error: "Producto no encontrado" });
-    }
-    if (error.code === "P2002") {
-      return res
-        .status(400)
-        .json({ error: "Ya existe un producto con ese slug" });
-    }
+    if (error.code === "P2002")
+      return res.status(400).json({ error: "Slug ya existe" });
     res.status(500).json({ error: "Error al actualizar producto" });
   }
 };
 
-// Eliminar producto (requiere token)
+// Eliminar producto (admin) – borra imágenes de Cloudinary
 const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
+    const product = await prisma.product.findUnique({
+      where: { id: parseInt(id) },
+    });
+    if (!product)
+      return res.status(404).json({ error: "Producto no encontrado" });
+
+    if (product.images && product.images.length) {
+      await deleteImagesFromUrls(product.images);
+    }
+
     await prisma.product.delete({ where: { id: parseInt(id) } });
     res.json({ message: "Producto eliminado correctamente" });
   } catch (error) {
     console.error(error);
-    if (error.code === "P2025") {
+    if (error.code === "P2025")
       return res.status(404).json({ error: "Producto no encontrado" });
-    }
     res.status(500).json({ error: "Error al eliminar producto" });
   }
 };
