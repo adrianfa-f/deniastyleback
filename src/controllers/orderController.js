@@ -1,4 +1,5 @@
 const { PrismaClient } = require("@prisma/client");
+const { sendNewOrderEmail } = require("../services/emailService");
 
 const prisma = new PrismaClient();
 
@@ -49,6 +50,16 @@ const createOrder = async (req, res) => {
       },
       include: { items: true },
     });
+
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (adminEmail) {
+      // No usamos await para no demorar la respuesta al cliente
+      sendNewOrderEmail(order, adminEmail).catch(console.error);
+    } else {
+      console.warn(
+        "ADMIN_EMAIL no está configurado en las variables de entorno.",
+      );
+    }
 
     res.status(201).json(order);
   } catch (error) {
